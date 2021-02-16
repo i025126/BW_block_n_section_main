@@ -5,56 +5,85 @@ CLASS zcl_core_basis_tools DEFINITION
 
   PUBLIC SECTION.
 
-    constants:
-      begin of gc_parameters,
+    CONSTANTS:
+      BEGIN OF gc_parameters,
         "! default value ROOT
-        prefix_cluster type string value 'PREFIX_CLUSTER',
+        prefix_cluster  TYPE string VALUE 'PREFIX_CLUSTER',
         "! Default value MDA
-        mda_section    type string value 'MDA_SECTION',
+        mda_section     TYPE string VALUE 'MDA_SECTION',
         "! Default value EDW
-        edw_section    type string value 'EDW_SECTION',
+        edw_section     TYPE string VALUE 'EDW_SECTION',
         "! Default value IAP
-        iap_section    type string value 'IAP_SECTION',
+        iap_section     TYPE string VALUE 'IAP_SECTION',
         "! Default value AAV
-        aav_section    type string value 'AAV_SECTION',
+        aav_section     TYPE string VALUE 'AAV_SECTION',
         "! Default value EXZ
-        exz_section    type string value 'EXZ_SECTION',
+        exz_section     TYPE string VALUE 'EXZ_SECTION',
         "! Default value SYS
-        sys_section    type string value 'SYS_SECTION',
+        sys_section     TYPE string VALUE 'SYS_SECTION',
         "! Defailt value ALL
-        all_postfix    type string value 'ALL_POSTFIX',
+        all_postfix     TYPE string VALUE 'ALL_POSTFIX',
         "! Auth default block AUTH
-        auth_block     type string value 'AUTH_BLOCK',
+        auth_block      TYPE string VALUE 'AUTH_BLOCK',
         "! Prefix for role default BW4
-        prefix_role    type string value 'PREFIX_ROLE',
+        prefix_role     TYPE string VALUE 'PREFIX_ROLE',
         "! P,lace to keep the cluster definitions SYSX_ALL
-        infoareacluster type string value 'INFOAREA_CLUSTER',
+        infoareacluster TYPE string VALUE 'INFOAREA_CLUSTER',
         "! Block for authorization AUTH
-        auth_root      type string value 'AUTH_ROOT',
-      end of gc_parameters.
+        auth_root       TYPE string VALUE 'AUTH_ROOT',
+      END OF gc_parameters.
 
     CLASS-DATA:
       gs_setup TYPE zcore_setup.
 
     CLASS-METHODS:
+      "! Returns the configuration value as per the given parameter
+      "! The parameters can have the values as found in the constant
+      "! gc_parameters
+      "! @parameter iv_constant |What constant do you need
+      "! @parameter rv_value    |value of constant
       get_c
         IMPORTING
           iv_constant     TYPE string
         RETURNING
           VALUE(rv_value) TYPE char30,
+      "! The method will create a role that allows a bearer to create content in the package and
+      "! below. The role is either the xALL or a block role - Forthe xALL the package is the root
+      "! level ROOTx and for the block it's the ROOTx.[Section].[Block] the sections is created if
+      "! they exists in BW as an InfoArea. So if you need to do only mixed models in f.x. IAP
+      "! you need to create an block in BW in IAP
+      "! @parameter iv_rolename | Rolename of the cluster or block
       hana_role_create
         IMPORTING
           iv_rolename TYPE agr_name
         RAISING
+          cx_rs_msg
+          cx_rs_not_found
           cx_nhi_adt_error,
+      "! Delete a role in HANA
+      "! @parameter iv_rolename | Rolename of the cluster or block
+      hana_role_delete
+        IMPORTING
+          iv_rolename TYPE agr_name
+        RAISING
+          cx_rs_msg
+          cx_nhi_adt_error,
+      "! Return the content of the role as a table - if it exists
+      "! @parameter iv_rolename | Rolename of the cluster or block
       hana_role_read
         IMPORTING
           iv_rolename       TYPE agr_name
         RETURNING
-          VALUE(rv_content) TYPE string
+          VALUE(rt_content) TYPE co2_string_tb
         RAISING
-          cx_rs_not_found
-          cx_rs_error,
+          cx_rs2hana_view_nhi,
+      "! Create a repository package as a sub package below the package given in parent. if the
+      "! parent is blank or not provided the package is placed in the root.
+      "! @parameter iv_parent      | Name of parent package
+      "! @parameter iv_package     | Name of package to be placed below parent
+      "! @parameter iv_structural  | If it's a structural package, no content can be placed in it
+      "! @parameter iv_txtlg       | Text for description of the new package
+      "! @parameter rv_package     | The fully qualified path of the new package
       hana_package_create
         IMPORTING
           iv_parent         TYPE string OPTIONAL
@@ -65,6 +94,10 @@ CLASS zcl_core_basis_tools DEFINITION
           VALUE(rv_package) TYPE string
         RAISING
           cx_rs_msg,
+      "! Creates infoarea is BW, intended to create the basis structure for a new cluster
+      "! @parameter iv_parent    | InfoArea as parent
+      "! @parameter iv_infoarea  | Name of Infoarea to be placed below parent
+      "! @parameter iv_txtlg     | Description of new InfoArea
       infoarea_create
         IMPORTING
           iv_parent   TYPE rsinfoarea
@@ -89,15 +122,6 @@ CLASS zcl_core_basis_tools DEFINITION
           VALUE(rv_exists) TYPE rs_bool.
 
     CLASS-METHODS:
-      _hana_role_read
-        IMPORTING
-          iv_package             TYPE string
-          iv_hdbrole             TYPE string
-        RETURNING
-          VALUE(rv_role_content) TYPE string
-        RAISING
-          cx_rs_not_found
-          cx_rs_error,
       _cluster_section_block_as_area
         IMPORTING
           iv_cluster       TYPE zcore_cluster  OPTIONAL
@@ -113,154 +137,193 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
 
   METHOD hana_role_create.
 
-
     DATA(lv_block)     = zcl_core_role_admin=>get_block_from_rolename( iv_rolename ).
     DATA(lv_roletype)  = zcl_core_role_admin=>get_roletype_from_rolename( iv_rolename ).
     DATA(lv_cluster)   = zcl_core_role_admin=>get_cluster_from_rolename( iv_rolename ).
-    " Make sure the root package have been created
-*    DATA(lv_txtlg)    = |Roles for Mixed models|.
-*
-*    "" This is to create the (make sure it's there) the AUTH structural package
-*    data(lv_auth_package)  = hana_package_create(  iv_parent = || iv_package = |{ get_c( gc_parameters-auth_root ) }| iv_txtlg = lv_txtlg iv_structural = rs_c_true ).
-*
-*    "" create the AUTH.ROOTx as all role will be in this one... not a structural
-*    lv_txtlg   = |Roles for Mixed models - Cluster { zcl_core_role_admin=>get_cluster_description( lv_cluster ) } |.
-*    lv_auth_package = hana_package_create(  iv_parent = lv_auth_package iv_package = |{ get_c( gc_parameters-prefix_cluster ) }{ lv_cluster }| iv_txtlg = lv_txtlg iv_structural = rs_c_false ).
-*
-*    "" Prepare the role... there is only one role per block and this will span all blocks in across the sections
-*    DATA lt_role_source     TYPE STANDARD TABLE OF string WITH NON-UNIQUE DEFAULT KEY.
-*    APPEND |role { lv_auth_package }::{ iv_rolename } { '{' } | TO lt_role_source.
-*    APPEND |// Privileges needed for anyone who wants to do data modeling in packages HILTI.03_Integration, HILTI.04_Analytics, etc. | TO lt_role_source.
-*    APPEND |// This role contains everything required for modeling  except for: | TO lt_role_source.
-*    APPEND |// - privileges on application data schemas | TO lt_role_source.
-*    APPEND |// | TO lt_role_source.
-*    APPEND |// This role must always be accompanied by the complementary roles including data schema access to enable data modeling. | TO lt_role_source.
-*    APPEND |// | TO lt_role_source.
-*    APPEND |  -- System Privileges:  | TO lt_role_source.
-*    APPEND |  -- Allow the user to verify that the tables underlying the Information Models do exist.| TO lt_role_source.
-*    APPEND |  -- We simply grant CATALOG READ, so the user has no SELECT Privilege on the underlying database tables.| TO lt_role_source.
-*    APPEND |  -- This will allow reading _all_ metadata in the system, but no table contents !| TO lt_role_source.
-*    APPEND |  system privilege: CATALOG READ; | TO lt_role_source.
-*    APPEND |   | TO lt_role_source.
-*    APPEND |  -- Here we allow the role to read the repository tree (expand the "content" tree). This does not allow seeing the content of packages:| TO lt_role_source.
-*    APPEND |  catalog sql object "SYS"."REPOSITORY_REST": EXECUTE; | TO lt_role_source.
-*    APPEND |   | TO lt_role_source.
-*    APPEND |  -- We also enable activation of time-based Attribute Views as these are based on a standard table in schema _SYS_BI | TO lt_role_source.
-*    APPEND |  -- for simplicity, we include the entire _SYS_BI schema which does not contain sensitive data | TO lt_role_source.
-*    APPEND |  catalog schema "_SYS_BI": SELECT;| TO lt_role_source.
-*    APPEND |  -- repository access:| TO lt_role_source.
-*
-*    "" Make sure the ROOTx package is created as a root
-*    DATA(lv_root_package) = |{ get_c( 'PREFIX_CLUSTER' ) }{ lv_cluster }|.
-*    lv_root_package = hana_package_create( iv_parent = '' iv_package = lv_root_package iv_txtlg = zcl_core_role_admin=>get_cluster_description( lv_cluster ) ).
-*    DO.
-*      ASSIGN COMPONENT sy-index OF STRUCTURE zcl_core_role_admin=>gc_section TO FIELD-SYMBOL(<lv_section>).
-*      IF sy-subrc <> 0.
-*        EXIT.
-*      ENDIF.
-*      IF _cluster_section_block_as_area( iv_section = <lv_section> iv_block = zcl_core_role_admin=>get_block_from_rolename( iv_rolename ) ) = rs_c_true.
-*        " If the infoarea is created the section.block the corresponding HANA is also created
-*        " Create the package ROOTx.<Section>.<Block> and add the
-*        DATA(lv_section_package) = hana_package_create( iv_parent = lv_root_package iv_package = |{ <lv_section> }| iv_txtlg = zcl_core_role_admin=>get_cluster_description( lv_cluster ) iv_structural = rs_c_true ).
-*        " create the ROOTx.xxx.YYYY as an none structural block
-*        DATA(lv_block_package)   = hana_package_create( iv_parent = lv_section_package iv_package = |{ lv_block }| iv_txtlg = zcl_core_role_admin=>get_cluster_description( lv_cluster ) iv_structural = rs_c_false ).
-*
-*        APPEND |  package : { lv_block_package }: | &&
-*               |REPO.READ, REPO.EDIT_NATIVE_OBJECTS, REPO.ACTIVATE_NATIVE_OBJECTS, REPO.MAINTAIN_NATIVE_PACKAGES, REPO.ACTIVATE_IMPORTED_OBJECTS, REPO.MAINTAIN_IMPORTED_PACKAGES;| TO lt_role_source.
-*      ENDIF.
-*    ENDDO.
-*    APPEND |  -- Read access to the generate external HANA View| TO lt_role_source.
-*    APPEND |  package system-local: REPO.READ;  | TO lt_role_source.
-*    APPEND |  -- Strictly speaking, no SELECT or EXECUTE privileges are required in | TO lt_role_source.
-*    APPEND |  -- order to build and activate data models, as long as the modeler has access to the catalog metadata (system privilege CATALOG READ).| TO lt_role_source.
-*    APPEND |  -- It is, however, easier to perform data modeling tasks if the modelers have SELECT access to the database schemas underlying the data models.| TO lt_role_source.
-*    APPEND |  -- Change to whatever schema you need | TO lt_role_source.
-*    APPEND |  catalog schema "_SYS_BIC": SELECT;| TO lt_role_source.
-*    APPEND |  -- It is possible to add any schema created for the general use| TO lt_role_source.
-*    APPEND '}' TO lt_role_source.
-*
-*    DATA lv_role_source TYPE string.
-*    CONCATENATE LINES OF lt_role_source INTO lv_role_source RESPECTING BLANKS IN CHARACTER MODE SEPARATED BY cl_abap_char_utilities=>cr_lf.
-*
-*    DATA:
-*      lr_nhi_api    TYPE REF TO if_nhi_api,
-*      lr_nhi_object TYPE REF TO if_nhi_object.
-*
-*    DATA:
-*
-*      lt_types    TYPE ce_nhi_object_type=>ty_types,
-*      lt_xreflist TYPE cl_nhi_reference_info=>ty_references,
-*      lt_text     TYPE cl_nhi_text=>ty_texts.
-*
-*    lr_nhi_object = cl_nhi_object=>create_instance( ).
-*
-*    APPEND ce_nhi_object_type=>type_hdb_role TO lt_types.
-*
-*    TRY.
-**    if lr_nhi_object->exists( lr_nhi_object->create_object_exists_req(
-**                           object = lr_object
-**                           session = cl_nhi_session=>create_session( ce_nhi_session_type=>st_active_session ) ) )->exists = abap_true.
-*        " Role exists... we need to find the meta data object
-*        READ TABLE lr_nhi_object->find( lr_nhi_object->create_find_objects_req(
-*                                    package = lv_auth_package
-*                                    name    = |{ iv_rolename }|
-*                                    types   = lt_types
-*                                    session = cl_nhi_session=>create_session( ce_nhi_session_type=>st_active_session ) ) )->objects INTO DATA(lr_object) INDEX 1.
-*        " the above might throw an error and we need to deal with that later
-*        IF sy-subrc <> 0.
-*          DATA(lr_metadata) = cl_nhi_metadata_inactive_ver=>create_metadata( version_id = '' edit = abap_false is_deletion = abap_false last_changed_at = |{ sy-datum }| ).
-*        ELSE.
-*          lr_metadata ?= lr_object->metadata.
-*        ENDIF.
-*
-*        DATA(lr_object_id) = cl_nhi_object_id=>create_object_id(
-*                                name     = |{ iv_rolename }|
-*                                package  = |{ lv_auth_package }|
-*                                tenant   = ''
-*                                type     = ce_nhi_object_type=>type_hdb_role
-*                                metadata = lr_metadata
-*                                version  = cl_nhi_inactive_version=>create_inactive_version( EXPORTING owner = cl_amdp_utils=>get_current_db_schema_name(  ) workspace = '' ) ).
-*
-*        APPEND cl_nhi_text=>create_text( content = 'Role create' max_length = |60| text_id = 'Description' text_type = 'ddd' ) TO lt_text.
-*
-*        DATA lvx_role_source TYPE xstring.
-*
-*        DATA(lr_session_inactive) = cl_nhi_inactive_session=>create_inactive_session( owner =  cl_amdp_utils=>get_current_db_schema_name(  )  workspace = '' ).
-*        DATA(lr_nhi_object_write) = lr_nhi_object->write_inactive( request = lr_nhi_object->create_write_single_inact_req(
-*                   cdata         = lv_role_source
-*                   bdata         = lvx_role_source
-*                   texts         = lt_text
-*                   object        = lr_object_id
-*                   xreflist      = lt_xreflist
-*                   metadata      = lr_metadata
-*                   content_texts = lt_text
-*                   session       = lr_session_inactive ) ).
-*        if lr_nhi_object_write->error_code = 40124.
-*
-*        endif.
-*
-*        IF lr_nhi_object_write->error_code <> 0.
-*          MESSAGE lr_nhi_object_write->error_msg TYPE rs_c_error.
-*        ENDIF.
-*
-*        data lt_objlist type cl_nhi_object_id=>ty_objlist.
-*        append lr_object_id to lt_objlist.
-*
-*        data(lr_nhi_activate) = lr_nhi_object->activate( request = lr_nhi_object->create_activate_objects_req(
-*                                                                        activationmode = ce_nhi_activation_mode=>activation_optimistic
-*                                                                        objlist        = lt_objlist
-*                                                                        session        = lr_session_inactive ) ).
-*      CATCH cx_sy_assign_cast_error
-*            cx_sy_move_cast_error INTO DATA(lrx_cast).
-*        DATA(d) = lrx_cast->get_longtext(  ).
-*        MESSAGE lrx_cast->get_text(  ) TYPE rs_c_error.
-*      CATCH cx_nhi_hana_repository INTO DATA(lrx_nhi).
-*        DATA(l) = lrx_nhi->get_longtext(  ).
-*        MESSAGE lrx_nhi->get_text(  ) TYPE rs_c_error.
-*    ENDTRY.
+
+    CALL METHOD zcl_core_role_admin=>static_do_message( iv_message = |HANA Role { iv_rolename } must be created| iv_detlevel = 1 ).
+
+    DATA(lv_root)      = |{ get_c( gc_parameters-prefix_cluster ) }{ lv_cluster }|.
+
+    "" Make sure the root package have been created
+    "" This is to create the (make sure it's there) the AUTH structural package
+    DATA(lv_txtlg)    = |Roles for Mixed models|.
+    DATA(lv_auth_package)  = hana_package_create(  iv_parent = || iv_package = |{ get_c( gc_parameters-auth_root ) }| iv_txtlg = lv_txtlg iv_structural = rs_c_true ).
+
+    "" create the AUTH.ROOTx as all role will be in this one... not a structural
+    "" AUTH.ROOTx
+    lv_txtlg   = |Roles for Mixed models - Cluster { zcl_core_role_admin=>get_cluster_description( lv_cluster ) } |.
+    lv_auth_package = hana_package_create(  iv_parent = lv_auth_package iv_package = |{ get_c( gc_parameters-prefix_cluster ) }{ lv_cluster }| iv_txtlg = lv_txtlg iv_structural = rs_c_false ).
+
+    TRY.
+        DATA(lt_template_content) = hana_role_read( iv_rolename = zcl_core_role_admin=>get_template_from_roletype( zcl_core_role_admin=>get_roletype_from_rolename( iv_rolename ) ) ).
+        "" Technically this can also be a problem with the nhi - but i would expect that the cx_rs2hana is thrown
+        ASSERT lt_template_content IS NOT INITIAL.
+      CATCH cx_rs2hana_view_nhi INTO DATA(lrx_nhi_not_found).
+        RAISE EXCEPTION TYPE cx_rs_not_found
+          EXPORTING
+            previous = lrx_nhi_not_found
+            object   = |Template HANA Role not found|
+            key      = |{ iv_rolename }|.
+    ENDTRY.
+    "" Prepare the role... there is only one role per block and this will span all blocks in across the sections
+    "" Since we get a notification when a new block is created we can update the role as we go, given the bearer access to new sections of the block
+    DATA lt_role_content TYPE co2_string_tb.
+
+    SELECT doccluster, docsection, docblock
+        FROM zi_core_contentview
+        WHERE docblock = @lv_block
+        ORDER BY doccluster, docsection, docblock
+        INTO TABLE @DATA(lt_section).
+
+    " Make sure that repository packages that is referenced in the role is also available in the repository
+    " It looks worse then it is - We just need to make sure all the packages are in
+    LOOP AT lt_section INTO DATA(ls_cluster) GROUP BY ls_cluster-doccluster.
+      " Create the ROOTx if not available
+      DATA(lv_root_package) = hana_package_create(  iv_parent = ''
+                                               iv_package = |{ get_c( gc_parameters-prefix_cluster ) }{ ls_cluster-doccluster }|
+                                               iv_structural = rs_c_true
+                                               iv_txtlg = |Cluster { ls_cluster-doccluster }{ zcl_core_role_admin=>get_cluster_description( ls_cluster-doccluster ) } | ).
+      LOOP AT GROUP ls_cluster INTO DATA(ls_section) GROUP BY ls_section-docsection.
+        " Create the section package if not available
+        data(lv_sec_package) = hana_package_create( iv_parent = lv_root_package
+                                          iv_package = |{ ls_section-docsection }|
+                                          iv_structural = rs_c_true
+                                          iv_txtlg = |Cluster { ls_cluster-doccluster }{ zcl_core_role_admin=>get_cluster_description( ls_cluster-doccluster ) } Section { ls_section-docsection } | ).
+        LOOP AT GROUP ls_section INTO DATA(ls_block).
+          " Create the development package below the section for the block
+          CALL METHOD hana_package_create
+            EXPORTING
+              iv_parent     = lv_sec_package
+              iv_package    = |{ ls_block-docblock }|
+              iv_structural = rs_c_false
+              iv_txtlg      = ||.
+        ENDLOOP.
+      ENDLOOP.
+    ENDLOOP.
+
+    "" Create the role from template
+    LOOP AT lt_template_content ASSIGNING FIELD-SYMBOL(<lv_role_content>).
+      APPEND INITIAL LINE TO lt_role_content ASSIGNING FIELD-SYMBOL(<lv_new_content>).
+      <lv_new_content> = <lv_role_content>.
+
+      AT FIRST.
+        "" role AUTH::BW4AUTHCTEMPLATE {
+        <lv_new_content> = |role { lv_auth_package }::{ iv_rolename }{ ' { ' }|.
+      ENDAT.
+      if strlen( <lv_role_content> ) >= 2 and <lv_role_content>(2) = '//'.
+        SHIFT <lv_new_content> LEFT BY 2 PLACES.
+        IF lv_block = zcl_core_role_admin=>get_virtual_block( iv_blocktype = zcl_core_role_admin=>gc_prefix-cluster_fix iv_cluster = lv_cluster ).
+          " This is a cluster role and we can grant access at cluster level
+          REPLACE 'CLUSTER.SECTION.BLOCK' IN <lv_new_content> WITH lv_root IN CHARACTER MODE.
+        ELSE.
+          LOOP AT lt_section INTO ls_section.
+            REPLACE 'CLUSTER' IN <lv_new_content> WITH lv_root               IN CHARACTER MODE.
+            REPLACE 'SECTION' IN <lv_new_content> WITH ls_section-docsection IN CHARACTER MODE.
+            REPLACE 'BLOCK'   IN <lv_new_content> WITH ls_section-docblock   IN CHARACTER MODE.
+
+            at last.
+              exit.
+            endat.
+            " Still more to come, let us add a line for this
+            append INITIAL LINE TO lt_role_content ASSIGNING <lv_new_content>.
+            " and fill it from the source
+            <lv_new_content> = <lv_role_content>+2.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+    DATA lv_role_source TYPE string.
+    CONCATENATE LINES OF lt_role_content INTO lv_role_source RESPECTING BLANKS IN CHARACTER MODE SEPARATED BY cl_abap_char_utilities=>cr_lf.
+
+
+    DATA: lr_wrapper TYPE REF TO zcl_core_nhi_wrapper.
+
+    " We deal with objects in one package AUTH.ROOTA
+    CREATE OBJECT lr_wrapper
+      EXPORTING
+        iv_package = lv_auth_package.
+
+    TRY.
+        DATA:
+          lt_rsmsg           TYPE rs_t_msg,
+          lt_msg             TYPE rs2hana_view_t_msg,
+          lts_affected_xrefs TYPE zcl_core_nhi_wrapper=>gtyts_xrefs.
+        CALL METHOD lr_wrapper->deploy_nhi_obj
+          EXPORTING
+            iv_content         = lv_role_source
+            ir_nhi_obj_id      = lr_wrapper->get_nhi_obj_id(
+                                      iv_id             = CONV #( iv_rolename )
+                                      iv_active_version = rs_c_true
+                                      ir_type           = ce_nhi_object_type=>type_hdb_role )
+            iv_detlevel        = '1'
+            iv_force           = rs_c_false
+          IMPORTING
+            et_rsmsg           = lt_rsmsg
+            et_msg             = lt_msg
+            ets_affected_xrefs = lts_affected_xrefs.
+
+        DATA _message TYPE string.
+        LOOP AT lt_rsmsg INTO DATA(ls_msg).
+          MESSAGE ID ls_msg-msgid TYPE ls_msg-msgty NUMBER ls_msg-msgno WITH ls_msg-msgv1 ls_msg-msgv2 ls_msg-msgv3 ls_msg-msgv4 INTO _message.
+          CALL METHOD zcl_core_role_admin=>static_do_message.
+        ENDLOOP.
+      CATCH cx_rs2hana_view_nhi INTO DATA(lrx_nhi).
+        CALL METHOD zcl_core_role_admin=>static_do_message( lrx_nhi->get_text( ) ).
+    ENDTRY.
+    CALL METHOD zcl_core_role_admin=>static_set_detlevel( -1 ).
 
   ENDMETHOD.
 
+  METHOD hana_role_delete.
+    DATA: lr_wrapper TYPE REF TO zcl_core_nhi_wrapper.
+
+    " We deal with objects in one package AUTH.ROOTA
+    DATA(lv_block)     = zcl_core_role_admin=>get_block_from_rolename( iv_rolename ).
+    DATA(lv_roletype)  = zcl_core_role_admin=>get_roletype_from_rolename( iv_rolename ).
+    DATA(lv_cluster)   = zcl_core_role_admin=>get_cluster_from_rolename( iv_rolename ).
+
+    " Make sure the root package have been created
+    DATA(lv_txtlg)    = |Roles for Mixed models|.
+
+    "" This is to create the (make sure it's there) the AUTH structural package
+    DATA(lv_auth_package)  = hana_package_create(  iv_parent = || iv_package = |{ get_c( gc_parameters-auth_root ) }| iv_txtlg = lv_txtlg iv_structural = rs_c_true ).
+
+    "" create the AUTH.ROOTx as all role will be in this one... not a structural
+    lv_txtlg   = |Roles for Mixed models - Cluster { zcl_core_role_admin=>get_cluster_description( lv_cluster ) } |.
+    lv_auth_package = hana_package_create(  iv_parent = lv_auth_package iv_package = |{ get_c( gc_parameters-prefix_cluster ) }{ lv_cluster }| iv_txtlg = lv_txtlg iv_structural = rs_c_false ).
+
+    CREATE OBJECT lr_wrapper
+      EXPORTING
+        iv_package = lv_auth_package.
+
+    DATA:
+      lt_rsmsg           TYPE rs_t_msg,
+      lt_msg             TYPE rs2hana_view_t_msg,
+      lts_affected_xrefs TYPE zcl_core_nhi_wrapper=>gtyts_xrefs.
+    TRY.
+        CALL METHOD lr_wrapper->delete_nhi_obj
+          EXPORTING
+            iv_force           = rs_c_false
+            ir_nhi_obj_id      = lr_wrapper->get_nhi_obj_id(
+                                      iv_id             = CONV #( iv_rolename )
+                                      iv_active_version = rs_c_false
+                                      ir_type           = ce_nhi_object_type=>type_hdb_role )
+          IMPORTING
+            ets_affected_xrefs = lts_affected_xrefs.
+        CALL METHOD lr_wrapper->delete_nhi_obj
+          EXPORTING
+            iv_force           = rs_c_false
+            ir_nhi_obj_id      = lr_wrapper->get_nhi_obj_id(
+                                      iv_id             = CONV #( iv_rolename )
+                                      iv_active_version = rs_c_true
+                                      ir_type           = ce_nhi_object_type=>type_hdb_role )
+          IMPORTING
+            ets_affected_xrefs = lts_affected_xrefs.
+      CATCH cx_rs2hana_view_nhi INTO DATA(lrx_nhi).
+    ENDTRY.
+  ENDMETHOD.
 
   METHOD _cluster_section_block_as_area.
     " iv_cluster
@@ -292,46 +355,29 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
 
   METHOD hana_role_read.
 
-    DATA(lv_auth_package) = |{ get_c( 'AUTH_ROOT' ) }.{ get_c( 'PREFIX_CLUSTER' ) }{ zcl_core_role_admin=>get_cluster_from_rolename( iv_rolename ) }|.
-    rv_content = _hana_role_read( iv_hdbrole = |{ iv_rolename }| iv_package = lv_auth_package ).
+    DATA lr_wrapper TYPE REF TO zcl_core_nhi_wrapper.
 
-  ENDMETHOD.
+    " did they ask for a template?
+    IF zcl_core_role_admin=>get_template_from_roletype( zcl_core_role_admin=>get_roletype_from_rolename( iv_rolename ) ) = iv_rolename.
+      " They did... the thing is that the template is not placed in the same package as the rest
+      " Sitting directly in AUTH
+      DATA(lv_package) = |{ zcl_core_basis_tools=>get_c( zcl_core_basis_tools=>gc_parameters-auth_root ) }|.
+      CALL METHOD zcl_core_role_admin=>static_do_message( |Reading HANA template role { iv_rolename }| ).
+    ELSE.
+      " Sitting in AUTH.ROOTx
+      lv_package = |{ zcl_core_basis_tools=>get_c( zcl_core_basis_tools=>gc_parameters-auth_root ) }.{ zcl_core_basis_tools=>get_c( zcl_core_basis_tools=>gc_parameters-prefix_cluster ) }{ zcl_core_role_admin=>get_cluster_from_rolename( iv_rolename ) }|.
+      CALL METHOD zcl_core_role_admin=>static_do_message( |Reading HANA role { iv_rolename }| ).
+    ENDIF.
 
-  METHOD _hana_role_read.
-    " So the hierarchy of the role in HANA is given from AUTH and above
-    " this makes it easyer for the security to get access across all
-    " clsuter just having access to AUTH
+    CREATE OBJECT lr_wrapper
+      EXPORTING
+        iv_package = lv_package.
 
-    DATA:
-      lr_nhi_object TYPE REF TO if_nhi_object.
-    lr_nhi_object = cl_nhi_object=>create_instance( ).
 
-    TRY.
-        DATA(lr_nhi_object_read) = lr_nhi_object->read(  request = lr_nhi_object->create_read_object_req(
-                   lang    = |{ sy-langu }|
-                   object  = cl_nhi_object_id=>create_object_id(
-                        name    = iv_hdbrole
-                        package = iv_package
-                        tenant  = ''
-                        type = ce_nhi_object_type=>type_hdb_role
-                        version = cl_nhi_version=>create_version( EXPORTING versiontype = ce_nhi_version_type=>vt_active_version ) )
-                   session = cl_nhi_session=>create_session( EXPORTING sessiontype = ce_nhi_session_type=>st_active_session )
-                   version = cl_nhi_version=>create_version( EXPORTING versiontype = ce_nhi_version_type=>vt_active_version ) ) ).
-        IF lr_nhi_object_read->error_code IS NOT INITIAL.
-          RAISE EXCEPTION TYPE cx_rs_not_found
-            EXPORTING
-              key    = |{ iv_package }::{ iv_hdbrole }|
-              object = |HANA role|.
-        ELSE.
-          rv_role_content = lr_nhi_object_read->cdata.
-        ENDIF.
-
-      CATCH cx_nhi_hana_repository INTO DATA(lrx_nhi).
-        MESSAGE lrx_nhi->get_text(  ) TYPE rs_c_error.
-        RAISE EXCEPTION TYPE cx_rs_error
-          EXPORTING
-            previous = lrx_nhi.
-    ENDTRY.
+    rt_content = lr_wrapper->read_nhi_obj( lr_wrapper->get_nhi_obj_id(
+                                  iv_active_version = rs_c_true
+                                  iv_id             = |{ iv_rolename }|
+                                  ir_type           = ce_nhi_object_type=>type_hdb_role ) ).
 
   ENDMETHOD.
 
@@ -382,7 +428,6 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD infoarea_exists.
-
 
     IF iv_infoarea IS INITIAL.
       rv_exists = rs_c_true.
@@ -452,6 +497,7 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
     ENDIF.
 
     IF hana_package_exists( lv_package ) = rs_c_false.
+      CALL METHOD zcl_core_role_admin=>static_do_message( |Repository package { lv_package } must be created| ).
       TRY.
           DATA(lr_nhi_package_create) = lr_nhi_package->create(  request = lr_nhi_package->create_create_package_req(
                             tenant = ''
@@ -490,6 +536,7 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
     ENDIF.
 
     IF infoarea_exists(  iv_infoarea ) = rs_c_false.
+      CALL METHOD zcl_core_role_admin=>static_do_message( |InfoArea { iv_infoarea } must be created below parent { iv_parent }| ).
       DATA:
         lv_nodename   TYPE rsawbnfoldernm,
         lv_parentnode TYPE rsawbnfoldernm.
@@ -520,3 +567,4 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
   ENDMETHOD.
 
 ENDCLASS.
+
