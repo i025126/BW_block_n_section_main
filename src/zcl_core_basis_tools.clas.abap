@@ -34,6 +34,7 @@ CLASS zcl_core_basis_tools DEFINITION
       END OF gc_parameters.
 
     CLASS-DATA:
+      gt_template type co2_string_tb,
       gs_setup TYPE zcore_setup.
 
     CLASS-METHODS:
@@ -104,7 +105,8 @@ CLASS zcl_core_basis_tools DEFINITION
           iv_infoarea TYPE rsinfoarea
           iv_txtlg    TYPE rstxtlg
         RAISING
-          cx_rs_msg.
+          cx_rs_msg,
+      class_constructor.
 
   PROTECTED SECTION.
   PRIVATE SECTION.
@@ -135,6 +137,38 @@ ENDCLASS.
 
 CLASS zcl_core_basis_tools IMPLEMENTATION.
 
+  METHOD class_constructor.
+   append:
+     |role AUTH::BW4AUTHCTEMPLATE { '{' }| to gt_template,
+     |-- Privileges needed for anyone who wants to do data modeling in packages of the block| to gt_template,
+     |-- This role contains everything required for modeling| to gt_template,
+     || to gt_template,
+     |-- System Privileges:| to gt_template,
+     |-- Allow the user to verify that the tables underlying the Information Models do exist.| to gt_template,
+     |-- We simply grant CATALOG READ, so the user has no SELECT Privilege on the underlying database tables.| to gt_template,
+     |-- This will allow reading _all_ metadata in the system, but no table contents !| to gt_template,
+     |  system privilege: CATALOG READ; | to gt_template,
+     || to gt_template,
+     |-- Here we allow the role to read the repository tree (expand the "content" tree). This does not allow seeing the content of packages:| to gt_template,
+     |  catalog sql object "SYS"."REPOSITORY_REST": EXECUTE; | to gt_template,
+     || to gt_template,
+     |-- We also enable activation of time-based Attribute Views as these are based on a standard table in schema _SYS_BI| to gt_template,
+     |-- for simplicity, we include the entire _SYS_BI schema which does not contain sensitive data | to gt_template,
+     |  catalog schema "_SYS_BI": SELECT;| to gt_template,
+     |-- Strictly speaking, no SELECT or EXECUTE privileges are required in| to gt_template,
+     |-- order to build and activate data models, as long as the modeler has access to the catalog metadata (system privilege CATALOG READ).| to gt_template,
+     |-- It is, however, easier to perform data modeling tasks if the modelers have SELECT access to the database schemas underlying the data models.| to gt_template,
+     |-- Change to whatever schema you need | to gt_template,
+     |catalog schema "_SYS_BIC": SELECT;  | to gt_template,
+     |-- Read access to the generate external HANA View| to gt_template,
+     |  package system-local: REPO.READ;  | to gt_template,
+     || to gt_template,
+     |-- repository access --| to gt_template,
+     |-- The below line will prevent the role from being activated, the program reading it will look for the // and replace the CLUSTER.SECTION.BLOCK| to gt_template,
+     |//  package CLUSTER.SECTION.BLOCK: REPO.READ, REPO.EDIT_NATIVE_OBJECTS, REPO.ACTIVATE_NATIVE_OBJECTS, REPO.MAINTAIN_NATIVE_PACKAGES, REPO.ACTIVATE_IMPORTED_OBJECTS, REPO.MAINTAIN_IMPORTED_PACKAGES;| to gt_template,
+     |{ '}' }| to gt_template.
+  ENDMETHOD.
+
   METHOD hana_role_create.
 
     DATA(lv_block)     = zcl_core_role_admin=>get_block_from_rolename( iv_rolename ).
@@ -148,7 +182,7 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
     "" Make sure the root package have been created
     "" This is to create the (make sure it's there) the AUTH structural package
     DATA(lv_txtlg)    = |Roles for Mixed models|.
-    DATA(lv_auth_package)  = hana_package_create(  iv_parent = || iv_package = |{ get_c( gc_parameters-auth_root ) }| iv_txtlg = lv_txtlg iv_structural = rs_c_true ).
+    DATA(lv_auth_package)  = hana_package_create(  iv_parent = || iv_package = |{ get_c( gc_parameters-auth_root ) }| iv_txtlg = lv_txtlg iv_structural = rs_c_false ).
 
     "" create the AUTH.ROOTx as all role will be in this one... not a structural
     "" AUTH.ROOTx
@@ -158,7 +192,10 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
     TRY.
         DATA(lt_template_content) = hana_role_read( iv_rolename = zcl_core_role_admin=>get_template_from_roletype( zcl_core_role_admin=>get_roletype_from_rolename( iv_rolename ) ) ).
         "" Technically this can also be a problem with the nhi - but i would expect that the cx_rs2hana is thrown
-        ASSERT lt_template_content IS NOT INITIAL.
+        if lt_template_content IS NOT INITIAL.
+          " This is a default kind of template, that can be overwritten
+          lt_template_content = gt_template.
+        endif.
       CATCH cx_rs2hana_view_nhi INTO DATA(lrx_nhi_not_found).
         RAISE EXCEPTION TYPE cx_rs_not_found
           EXPORTING
@@ -505,7 +542,7 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
                             description = |{ iv_txtlg }|
                             du_vendor = ''
                             hints_for_translation = ''
-                            orig_lang = |{ sy-langu }|
+                            orig_lang = |en_US|
                             package = lv_package
                             responsible = 'SAPHANADB'
                             structural = iv_structural
@@ -515,6 +552,29 @@ CLASS zcl_core_basis_tools IMPLEMENTATION.
                             text_terminology_domain = '' ) ).
           rv_package = lv_package.
         CATCH cx_nhi_hana_repository INTO DATA(lrx_nhi).
+          RAISE EXCEPTION TYPE cx_rs_msg
+            EXPORTING
+              previous = lrx_nhi.
+      ENDTRY.
+    ELSE.
+      CALL METHOD zcl_core_role_admin=>static_do_message( |Repository package { lv_package } must be Updated| ).
+      TRY.
+          DATA(lr_nhi_package_update) = lr_nhi_package->update( request = lr_nhi_package->create_update_package_req(
+                            tenant = ''
+                            delivery_unit = ''
+                            description = |{ iv_txtlg }|
+                            du_vendor = ''
+                            hints_for_translation = ''
+                            orig_lang = |en_US|
+                            package = lv_package
+                            responsible = 'SAPHANADB'
+                            structural = iv_structural
+                            texts = lt_texts
+                            text_collection = ''
+                            text_status = ''
+                            text_terminology_domain = '' ) ).
+          rv_package = lv_package.
+        CATCH cx_nhi_hana_repository INTO lrx_nhi.
           RAISE EXCEPTION TYPE cx_rs_msg
             EXPORTING
               previous = lrx_nhi.
